@@ -1,4 +1,5 @@
 vm = require('vm')
+sinon = require('sinon');
 
 module.exports = (chai, utils) ->
 
@@ -7,7 +8,8 @@ module.exports = (chai, utils) ->
       templates = @templates = {}
 
     run: (block) ->
-      block
+			# Block is an annotation array ["$templateCache", function($templateCache) {..}]
+      block[1]
         put: (id, content) =>
           @templates[id] = content
 
@@ -18,7 +20,7 @@ module.exports = (chai, utils) ->
   #   moduleName - generated module name `angular.module('myApp')...`
   #   templateId - generated template id `$templateCache.put('id', ...)`
   #   templateContent - template content `$templateCache.put(..., <div>cache me!</div>')`
-  evaluateTemplate = (processedContent) ->
+  evaluateTemplate = (processedContent, require=null) ->
     modules = {}
 
     context =
@@ -29,8 +31,28 @@ module.exports = (chai, utils) ->
           if modules[name] then return modules[name]
           throw new Error "Module #{name} does not exists!"
 
+    context.require = (require || sinon.stub()).callsArgWith(1, context.angular)
+
     vm.runInNewContext processedContent, context
     modules
+
+  evaluateAngular2Template = (processedContent) ->
+    mockWindow = {}
+    context =
+      window: mockWindow
+
+    vm.runInNewContext processedContent, context
+    mockWindow
+
+  # Assert that require is used
+  chai.Assertion.addMethod 'requireModule', (expectedModuleName) ->
+    require = sinon.stub()
+
+    code = utils.flag @, 'object'
+    evaluateTemplate code, require
+
+    sinon.assert.calledWith(require, [expectedModuleName])
+    @
 
   # Assert that a module with the given name is defined
   chai.Assertion.addMethod 'defineModule', (expectedModuleName) ->
@@ -63,12 +85,30 @@ module.exports = (chai, utils) ->
     utils.flag @, 'lastAssertedTemplateContent', templateContent
     @
 
+  # Assert that a template with given id was defined in a Angular 2 template
+  chai.Assertion.addMethod 'defineAngular2TemplateId', (expectedTemplateId) ->
+    code = utils.flag @, 'object'
+    mockWindow = evaluateAngular2Template code
+
+    templateCache = mockWindow.$templateCache
+    @assert templateCache?,
+      "expected window.$templateCache to be defined but was not defined"
+
+    templateContent = templateCache[expectedTemplateId]
+    definedTemplateIds = (Object.keys templateCache).join ', '
+    @assert templateContent?,
+      "expected to define template '#{expectedTemplateId}' but only defined #{definedTemplateIds}"
+
+    utils.flag @, 'lastAssertedTemplateContent', templateContent
+    @
+
   # Assert that the cache has a valid content
   chai.Assertion.addMethod 'haveContent', (expectedContent) ->
     templateContent = utils.flag @, 'lastAssertedTemplateContent'
 
     @assert templateContent?,
-      "you have to assert to.defineTemplateId before asserting to.haveContent"
+      "you have to assert to.defineTemplateId or to.defineAngular2TemplateId " +
+      "before asserting to.haveContent"
 
     @assert templateContent is expectedContent,
       "expected template content '#{templateContent}' to be '#{expectedContent}'"
